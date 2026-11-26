@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuaRip Games</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c2128; --muted:#667085; --line:#d9dde3; --accent:#2f6fdb;
+          --ok:#1a7f4b; --warn:#a15c00; --bad:#b42318; --code:#eef1f5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1d2128; --text:#e6e9ee; --muted:#9aa3b0; --line:#323945; --accent:#6c9cf5;
+            --ok:#4cc38a; --warn:#e0a040; --bad:#f2786b; --code:#272c35; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:16px; padding:12px 20px;
+           background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; }
+  nav button { background:none; border:0; color:var(--muted); font:inherit; padding:6px 12px; cursor:pointer;
+               border-bottom:2px solid transparent; }
+  nav button.on { color:var(--text); border-bottom-color:var(--accent); }
+  main { max-width:1000px; margin:0 auto; padding:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:16px; margin:0 0 4px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin:10px 0; }
+  label { display:flex; flex-direction:column; gap:3px; font-size:13px; color:var(--muted); }
+  input[type=text], input[type=number], input[type=password], select {
+    font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+    background:var(--bg); color:var(--text); min-width:0; }
+  label.check { flex-direction:row; align-items:center; gap:6px; color:var(--text); }
+  button.btn { font:inherit; padding:6px 14px; border-radius:6px; border:1px solid var(--line);
+               background:var(--card); color:var(--text); cursor:pointer; }
+  button.btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.btn:disabled { opacity:.45; cursor:default; }
+  pre { background:var(--code); border-radius:6px; padding:8px 10px; margin:8px 0 0; font-size:12px;
+        max-height:240px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .scroll { overflow-x:auto; }
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.5); display:none; align-items:center; justify-content:center; padding:16px; }
+  #modal .box { background:var(--card); border-radius:8px; width:min(560px,100%); max-height:80vh; display:flex; flex-direction:column; padding:16px; }
+  #modal ul { list-style:none; margin:8px 0; padding:0; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  #modal li { padding:6px 10px; cursor:pointer; border-bottom:1px solid var(--line); }
+  #modal li:hover { background:var(--code); }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SuaRip Games</h1>
+  <nav>
+    <button data-tab="drives" class="on">Drives</button>
+    <button data-tab="library">Library</button>
+    <button data-tab="setup">Setup</button>
+  </nav>
+  <span class="muted" id="version"></span>
+</header>
+<main>
+  <section id="tab-drives"><div id="drives"></div><p class="muted" id="drives-empty"></p></section>
+  <section id="tab-library" class="hide"></section>
+  <section id="tab-setup" class="hide"></section>
+</main>
+<div id="modal"><div class="box">
+  <strong id="m-title">Choose a folder</strong>
+  <div class="muted" id="m-path"></div>
+  <ul id="m-list"></ul>
+  <div class="row"><button class="btn primary" id="m-pick">Use this folder</button><button class="btn" id="m-cancel">Cancel</button></div>
+</div></div>
+
+<script>
+"use strict";
+// ---------- helpers ----------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+async function api(path, body) {
+  const headers = {"Content-Type": "application/json"};
+  const token = sessionStorage.getItem("token");
+  if (token) headers["X-Token"] = token;
+  const res = await fetch(path, body === undefined ? {headers} : {method: "POST", headers, body: JSON.stringify(body)});
+  if (res.status === 401) {
+    const t = prompt("Access token:");
+    if (t) { sessionStorage.setItem("token", t); return api(path, body); }
+    throw new Error("token required");
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const statusClass = s => ({clean: "ok", review: "warn", damaged: "bad", "check-log": "bad"}[s] || "");
+
+// ---------- tabs ----------
+let current = "drives";
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.tab)));
+function show(tab) {
+  current = tab;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  for (const t of ["drives", "library", "setup"]) document.getElementById("tab-" + t).classList.toggle("hide", t !== tab);
+  if (tab === "library") loadLibrary();
+  if (tab === "setup") loadSetup();
+}
+
+// ---------- folder browser ----------
+function pickPath(title, start, files) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("modal");
+    let path = start || "";
+    const done = v => { modal.style.display = "none"; resolve(v); };
+    document.getElementById("m-title").textContent = title;
+    document.getElementById("m-cancel").onclick = () => done(null);
+    document.getElementById("m-pick").onclick = () => done(path);
+    document.getElementById("m-pick").classList.toggle("hide", !!files);
+    async function load(p) {
+      const data = await api("/api/browse?files=" + (files ? 1 : 0) + "&path=" + encodeURIComponent(p));
+      path = data.path;
+      document.getElementById("m-path").textContent = data.error ? path + " (" + data.error + ")" : path;
+      const list = document.getElementById("m-list");
+      list.replaceChildren();
+      if (data.parent) list.append(h("li", {onclick: () => load(data.parent)}, "⬆ .."));
+      for (const e of data.entries) {
+        list.append(h("li", {onclick: () => e.dir ? load(path.replace(/\/$/, "") + "/" + e.name) : done(path.replace(/\/$/, "") + "/" + e.name)},
+          (e.dir ? "📁 " : "📄 ") + e.name));
+      }
+    }
+    modal.style.display = "flex";
+    load(path);
+  });
+}
+
+// ---------- drives ----------
+const cards = {};
+function makeCard(dev) {
+  const c = {dev, dirty: false, since: 0, inspecting: false, hadDisc: false, wasRunning: false};
+  c.model = h("strong"); c.state = h("span", {class: "muted"});
+  c.title = h("input", {type: "text", size: 32, oninput: () => c.dirty = true});
+  c.disc = h("input", {type: "number", min: 1, style: "width:70px", oninput: () => c.dirty = true});
+  c.engine = h("select", {onchange: () => c.dirty = true}, h("option", {value: ""}, "automatic"),
+    h("option", {value: "redumper"}, "redumper"), h("option", {value: "builtin"}, "dd / ddrescue"));
+  c.why = h("div", {class: "muted"});
+  c.force = h("input", {type: "checkbox"}); c.over = h("input", {type: "checkbox"});
+  c.damaged = h("input", {type: "checkbox"}); c.resume = h("input", {type: "checkbox"});
+  c.start = h("button", {class: "btn primary", onclick: () => run(c)}, "Start rip");
+  c.skip = h("button", {class: "btn", onclick: () => api("/api/skip", {dev}).catch(e => alert(e.message))}, "Skip disc");
+  c.eject = h("button", {class: "btn", onclick: () => api("/api/eject", {dev}).catch(e => alert(e.message))}, "Eject");
+  c.inspectBtn = h("button", {class: "btn", onclick: () => inspect(c, true)}, "Re-inspect");
+  c.progress = h("div", {class: "muted"}); c.log = h("pre", {class: "hide"});
+  c.el = h("div", {class: "card"},
+    h("div", {}, c.model, " ", c.state), c.why,
+    h("div", {class: "row"},
+      h("label", {}, "Title", c.title), h("label", {}, "Disc #", c.disc), h("label", {}, "Engine", c.engine),
+      h("label", {class: "check", title: "Go straight to ddrescue and give up after a stretch with no good reads; keeps what was recovered"},
+        c.damaged, "problem disc"),
+      h("label", {class: "check", title: "Continue an earlier partial rip of this disc, for example in a different drive"}, c.resume, "resume earlier attempt"),
+      h("label", {class: "check"}, c.force, "force split"), h("label", {class: "check"}, c.over, "overwrite")),
+    h("div", {class: "row"}, c.start, c.skip, c.eject, c.inspectBtn), c.progress, c.log);
+  document.getElementById("drives").append(c.el);
+  return c;
+}
+async function inspect(c, force) {
+  if (c.inspecting) return;
+  c.inspecting = true; c.why.textContent = "Inspecting the disc...";
+  try {
+    const d = await api("/api/inspect", {dev: c.dev});
+    if (d.disc && (force || !c.dirty)) {
+      c.title.value = d.title; c.disc.value = d.disc_number; c.dirty = false;
+      const parts = [d.media, "label \"" + d.label + "\"", d.audio + " audio track(s)", "suggested engine: " + d.engine];
+      c.why.textContent = parts.join(" · ") + " — " + d.why +
+        (d.protection_markers.length ? " [" + d.protection_markers.join(", ") + "]" : "");
+    } else if (!d.disc) c.why.textContent = "";
+  } catch (e) { c.why.textContent = e.message; }
+  c.inspecting = false;
+}
+async function run(c) {
+  try {
+    await api("/api/start", {dev: c.dev, title: c.title.value, disc: c.disc.value, engine: c.engine.value,
+                             force_split: c.force.checked, overwrite: c.over.checked,
+                             damaged: c.damaged.checked, resume: c.resume.checked});
+    c.since = 0; c.log.textContent = ""; c.log.classList.remove("hide");
+  } catch (e) { alert(e.message); }
+}
+async function refreshLog(c) {
+  const d = await api("/api/log?dev=" + encodeURIComponent(c.dev) + "&since=" + c.since);
+  c.since = d.next;
+  if (d.lines.length) {
+    c.log.classList.remove("hide");
+    c.log.textContent += d.lines.join("\n") + "\n";
+    c.log.scrollTop = c.log.scrollHeight;
+  }
+  c.progress.textContent = d.job && d.job.running ? d.progress : "";
+}
+async function pollDrives() {
+  if (current === "drives") {
+    try {
+      const {drives} = await api("/api/status");
+      document.getElementById("drives-empty").textContent = drives.length ? "" : "No optical drives found.";
+      for (const d of drives) {
+        const c = cards[d.dev] || (cards[d.dev] = makeCard(d.dev));
+        const running = !!(d.job && d.job.running);
+        c.model.textContent = d.dev + " · " + d.model;
+        let state = running ? "ripping " + d.job.title + " (" + fmtTime(d.job.elapsed) + ")"
+                            : d.disc ? "disc loaded" : "no disc";
+        if (d.job && !running) state += " · last job " + (d.job.exit === 0 ? "finished" : "exited with code " + d.job.exit);
+        if (d.profile) state += " · profile: " + d.profile; else state += " · no drive profile";
+        c.state.textContent = state;
+        c.start.disabled = running || !d.disc; c.skip.disabled = !running;
+        c.eject.disabled = running; c.inspectBtn.disabled = running || !d.disc;
+        if (d.disc && !c.hadDisc && !running) { c.dirty = false; inspect(c, false); }
+        if (!d.disc) { c.why.textContent = ""; }
+        c.hadDisc = d.disc;
+        if (running || c.wasRunning) await refreshLog(c);
+        c.wasRunning = running;
+      }
+    } catch (e) { document.getElementById("drives-empty").textContent = e.message; }
+  }
+  setTimeout(pollDrives, 2000);
+}
+
+// ---------- library ----------
+async function loadLibrary() {
+  const box = document.getElementById("tab-library");
+  const d = await api("/api/library");
+  box.replaceChildren(h("p", {class: "muted"}, d.path + " · " + d.games.length + " game(s)"));
+  if (!d.games.length) box.append(h("p", {}, "Nothing ripped yet."));
+  const rows = d.games.map(g => h("tr", {},
+    h("td", {}, g.title || g.folder, h("div", {class: "muted"}, g.folder)),
+    h("td", {}, g.protection || "unknown"),
+    h("td", {}, g.error ? h("span", {class: "bad"}, g.error) : g.discs.map(x =>
+      h("div", {}, "Disc " + x.disc + " ", h("span", {class: "tag " + statusClass(x.status)}, x.status),
+        " " + (x.fallback_from ? "dd (after " + x.fallback_from + " failed)" : x.engine) + " · " + (x.drive || ""))))));
+  if (rows.length) box.append(h("div", {class: "card scroll"}, h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "Game"), h("th", {}, "Protection"), h("th", {}, "Discs"))), h("tbody", {}, rows))));
+}
+
+// ---------- setup ----------
+async function loadSetup() {
+  const box = document.getElementById("tab-setup");
+  const d = await api("/api/setup");
+  document.getElementById("version").textContent = "v" + d.version;
+  const cfg = d.config;
+  box.replaceChildren();
+
+  // tools
+  const toolRows = d.tools.map(t => h("tr", {},
+    h("td", {}, t.name), h("td", {}, h("span", {class: t.found ? "ok" : (t.apt || t.name === "redumper" ? "bad" : "muted")}, t.found ? "found" : "missing")),
+    h("td", {class: "muted"}, t.found ? [t.path, t.version ? " · " + t.version : ""] : t.needed)));
+  const tools = h("div", {class: "card scroll"}, h("h2", {}, "1. Tools"), h("table", {}, h("tbody", {}, toolRows)));
+  if (d.install_command) {
+    tools.append(h("p", {class: "muted"}, "Install the missing packages (the web app never runs sudo for you):"),
+      h("pre", {}, d.install_command),
+      h("button", {class: "btn", onclick: () => navigator.clipboard && navigator.clipboard.writeText(d.install_command)}, "Copy"));
+  }
+  if (!d.tools.find(t => t.name === "redumper").found) {
+    tools.append(h("p", {}, "redumper is not in the apt repositories. Download the Linux build from ",
+      h("a", {href: d.redumper_url, target: "_blank", rel: "noopener"}, d.redumper_url),
+      ", unpack it, then choose the binary below."));
+  }
+  box.append(tools);
+
+  // permissions
+  box.append(h("div", {class: "card"}, h("h2", {}, "2. Permissions and space"),
+    d.checks.map(c => h("div", {}, h("span", {class: c.ok === true ? "ok" : c.ok === false ? "bad" : "muted"}, c.ok === true ? "✔ " : c.ok === false ? "✘ " : "? "),
+      c.name, c.ok === false ? h("div", {class: "muted"}, "Fix: " + c.fix) : null))));
+
+  // settings
+  const f = {};
+  const pathField = (key, label, files) => {
+    f[key] = h("input", {type: "text", size: 42, value: cfg[key] || ""});
+    return h("label", {}, label, h("div", {class: "row", style: "margin:0"}, f[key],
+      h("button", {class: "btn", type: "button", onclick: async () => {
+        const p = await pickPath("Choose " + label.toLowerCase(), f[key].value, files);
+        if (p) f[key].value = p; }}, "Browse...")));
+  };
+  const text = (key, label, type) => (f[key] = h("input", {type: type || "text", value: cfg[key] || "",
+    placeholder: cfg[key + "_set"] ? "(saved, leave blank to keep)" : ""}), h("label", {}, label, f[key]));
+  const events = ["clean", "review", "fallback", "damaged", "check-log", "failed", "skipped", "ready"];
+  const evBoxes = events.map(e => h("label", {class: "check"},
+    Object.assign(h("input", {type: "checkbox"}), {checked: cfg.notify_on.includes(e), value: e}), e));
+  f.desktop = h("input", {type: "checkbox"}); f.desktop.checked = cfg.desktop_notify;
+  f.slim = h("input", {type: "checkbox"}); f.slim.checked = cfg.slim;
+  const msg = h("span", {class: "muted"});
+  box.append(h("div", {class: "card"}, h("h2", {}, "3. Folders and tools"),
+    h("p", {class: "muted"}, "Saved to " + d.config_path + " (shared with the command line)."),
+    pathField("redumper", "redumper binary", true), pathField("scratch", "Scratch folder (local disk)"),
+    pathField("library", "Final destination (library)"),
+    pathField("mount", "Network share mount point (optional)"),
+    h("p", {class: "muted"}, "If the library lives on a network share, set its mount point and rips will refuse to run when it is not mounted."),
+    h("label", {class: "check"}, f.slim, "Skip redumper's large raw files (saves space, prevents refining later)")));
+  box.append(h("div", {class: "card"}, h("h2", {}, "4. Notifications (ntfy)"),
+    h("div", {class: "row"}, text("ntfy_url", "Server URL"), text("ntfy_topic", "Topic")),
+    h("div", {class: "row"}, text("ntfy_token", "Access token", "password"), text("ntfy_user", "or user"), text("ntfy_password", "password", "password")),
+    h("div", {class: "row"}, evBoxes), h("label", {class: "check"}, f.desktop, "Desktop popup (needs notify-send)")));
+  box.append(h("div", {class: "row"}, h("button", {class: "btn primary", onclick: async () => {
+    const body = {slim: f.slim.checked, desktop_notify: f.desktop.checked,
+      notify_on: evBoxes.filter(l => l.firstChild.checked).map(l => l.firstChild.value)};
+    for (const k of ["redumper", "scratch", "library", "mount", "ntfy_url", "ntfy_topic", "ntfy_token", "ntfy_user", "ntfy_password"]) body[k] = f[k].value;
+    try { await api("/api/config", body); msg.textContent = "Saved."; loadSetup(); } catch (e) { msg.textContent = e.message; }
+  }}, "Save settings"), msg));
+
+  // drive profiles
+  const status = (await api("/api/status")).drives;
+  const profiles = status.map(dr => {
+    const key = h("input", {type: "text", size: 14, value: dr.profile || dr.model.split(" ").pop()});
+    const matched = dr.profile ? cfg.drives[dr.profile] : null;
+    const args = h("input", {type: "text", size: 60, value: matched ? matched.redumper_args : "",
+      placeholder: "--drive-type=GENERIC --drive-sector-order=DATA_SUB_C2 --speed=8"});
+    return h("div", {class: "row"}, h("div", {}, dr.dev + " · " + dr.model), h("label", {}, "Match text", key), h("label", {}, "redumper options", args),
+      h("button", {class: "btn", onclick: async () => {
+        const drives = JSON.parse(JSON.stringify(cfg.drives)); drives[key.value] = {redumper_args: args.value};
+        await api("/api/config", {drives}); loadSetup(); }}, "Save profile"));
+  });
+  box.append(h("div", {class: "card"}, h("h2", {}, "5. Drive profiles"),
+    h("p", {class: "muted"}, "Some drives need extra redumper options to give good CD dumps (a wrong setting shows up as a Q error count equal to the number of sectors). Profiles match a drive by part of its model name."),
+    profiles.length ? profiles : h("p", {}, "No drives detected.")));
+}
+
+loadSetup().catch(() => {});
+pollDrives();
+</script>
+</body>
+</html>
