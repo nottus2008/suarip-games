@@ -134,4 +134,4 @@ you use it.
 
 ## License
 
-MIT, see `LICENSE` (replace the name in it with yours before publishing).
+MIT, see `LICENSE`.
